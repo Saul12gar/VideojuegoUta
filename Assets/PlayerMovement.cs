@@ -1,5 +1,5 @@
 using UnityEngine;
-using UnityEngine.UI; // Necesario si quieres conectar una barra UI más adelante
+using UnityEngine.UI;
 
 public class PlayerController : MonoBehaviour
 {
@@ -9,6 +9,23 @@ public class PlayerController : MonoBehaviour
     public float velocidadActual;
     private CharacterController controller;
 
+    [Header("Sistema de Salto y Gravedad")]
+    public float fuerzaSalto = 5f;
+    public float gravedad = -20f;
+    private Vector3 velocidadVertical;
+    private bool estaEnSuelo;
+    private bool saltoSolicitado = false;
+    private float temporizadorRuidoSalto = 0f;
+    
+    [Header("Buffer de Salto (Evita que falle el salto)")]
+    public float bufferSaltoTiempo = 0.2f; // Tiempo que el juego "recuerda" que quisiste saltar
+    private float contadorBufferSalto = 0f;
+
+    [Header("Detección de Suelo")]
+    public Transform comprobadorSuelo;
+    public float radioSuelo = 0.3f;
+    public LayerMask mascaraSuelo;
+
     [Header("Sistema de Estamina")]
     public float estaminaMaxima = 100f;
     public float estaminaActual;
@@ -17,7 +34,6 @@ public class PlayerController : MonoBehaviour
     private bool estaCorriendo = false;
 
     [Header("Sistema de Ruido (Para el Villano)")]
-    // 0 = Silencioso, 1 = Caminando, 2 = Corriendo
     public float nivelDeRuido = 0f; 
     [Tooltip("Radio actual en metros al que el villano puede escuchar al jugador")]
     public float radioDeRuido = 0f; 
@@ -27,20 +43,63 @@ public class PlayerController : MonoBehaviour
         controller = GetComponent<CharacterController>();
         if (controller == null)
         {
-            // Si no tiene Character Controller, lo añade automáticamente
             controller = gameObject.AddComponent<CharacterController>();
         }
         estaminaActual = estaminaMaxima;
 
-        // --- NUEVO: BLOQUEAR EL CURSOR AL INICIAR EL JUEGO ---
-    Cursor.lockState = CursorLockMode.Locked;
-    Cursor.visible = false;
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
     }
 
     void Update()
     {
+        ManejarGravedadYSaltos();
         ManejarMovimientoYEstamina();
         CalcularRuido();
+    }
+
+    void ManejarGravedadYSaltos()
+    {
+        // 1. Detección robusta del suelo
+        bool enSueloController = controller.isGrounded;
+        bool enSueloEsfera = false;
+        if (comprobadorSuelo != null)
+        {
+            enSueloEsfera = Physics.CheckSphere(comprobadorSuelo.position, radioSuelo, mascaraSuelo);
+        }
+        estaEnSuelo = enSueloController || enSueloEsfera;
+
+        if (estaEnSuelo && velocidadVertical.y < 0)
+        {
+            velocidadVertical.y = -2f; 
+        }
+
+        // 2. Registrar la intención de salto (Buffer)
+        if (Input.GetButtonDown("Jump"))
+        {
+            contadorBufferSalto = bufferSaltoTiempo;
+        }
+        else if (contadorBufferSalto > 0)
+        {
+            contadorBufferSalto -= Time.deltaTime;
+        }
+
+        // 3. Ejecutar el salto si hay memoria de buffer y estamos en el suelo (Sin saltos infinitos en el aire)
+        if (contadorBufferSalto > 0 && estaEnSuelo)
+        {
+            velocidadVertical.y = Mathf.Sqrt(fuerzaSalto * -2f * gravedad);
+            saltoSolicitado = true;
+            temporizadorRuidoSalto = 0.3f; 
+            contadorBufferSalto = 0f; // Consumir el buffer para evitar dobles saltos
+        }
+        else
+        {
+            saltoSolicitado = false;
+        }
+
+        // 4. Aplicar gravedad constante
+        velocidadVertical.y += gravedad * Time.deltaTime;
+        controller.Move(velocidadVertical * Time.deltaTime);
     }
 
     void ManejarMovimientoYEstamina()
@@ -50,8 +109,7 @@ public class PlayerController : MonoBehaviour
 
         Vector3 moveDir = transform.right * moveX + transform.forward * moveZ;
 
-        // Detectar si intenta correr (Tecla Shift Izquierdo) y se está moviendo
-        bool quiereCorrer = Input.GetKey(KeyCode.LeftShift) && (moveX != 0 || moveZ != 0);
+        bool quiereCorrer = Input.GetKey(KeyCode.LeftShift) && (moveX != 0 || moveZ != 0) && estaEnSuelo;
 
         if (quiereCorrer && estaminaActual > 0)
         {
@@ -62,7 +120,7 @@ public class PlayerController : MonoBehaviour
             if (estaminaActual <= 0)
             {
                 estaminaActual = 0;
-                estaCorriendo = false; // Se agotó la estamina
+                estaCorriendo = false; 
             }
         }
         else
@@ -70,7 +128,6 @@ public class PlayerController : MonoBehaviour
             estaCorriendo = false;
             velocidadActual = velocidadCaminar;
 
-            // Recuperar estamina si no está corriendo
             if (estaminaActual < estaminaMaxima)
             {
                 estaminaActual += recuperacionEstamina * Time.deltaTime;
@@ -78,7 +135,6 @@ public class PlayerController : MonoBehaviour
             }
         }
 
-        // Aplicar movimiento básico en el plano (ignorando gravedad por simplicidad o añadiéndola)
         controller.Move(moveDir * velocidadActual * Time.deltaTime);
     }
 
@@ -88,20 +144,30 @@ public class PlayerController : MonoBehaviour
         float moveZ = Input.GetAxis("Vertical");
         bool enMovimiento = (moveX != 0 || moveZ != 0);
 
-        if (!enMovimiento)
+        if (temporizadorRuidoSalto > 0)
+        {
+            temporizadorRuidoSalto -= Time.deltaTime;
+        }
+
+        if (temporizadorRuidoSalto > 0 || saltoSolicitado)
+        {
+            nivelDeRuido = 3f;
+            radioDeRuido = 25f; 
+        }
+        else if (!enMovimiento)
         {
             nivelDeRuido = 0f;
-            radioDeRuido = 0f; // Quieto = Sin ruido
+            radioDeRuido = 0f; 
         }
         else if (estaCorriendo)
         {
             nivelDeRuido = 2f;
-            radioDeRuido = 18f; // El villano te escucha desde lejos al correr
+            radioDeRuido = 18f; 
         }
         else
         {
             nivelDeRuido = 1f;
-            radioDeRuido = 5f; // Caminando normal, radio corto de escucha
+            radioDeRuido = 5f; 
         }
     }
 }
